@@ -1,0 +1,632 @@
+---
+title: "Midterm_Project_Yelp"
+author: "Laura"
+date: "12/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(
+tidyverse,
+magrittr,
+knitr,
+jsonlite,
+lme4,
+arm
+)
+```
+
+Read Yelp Data
+```{r cars}
+setwd("/Users/laura/Desktop/BU/Course/678/Midterm_Project_2019/Yelp Dataset Challenge")
+parentwd <- getwd()
+setwd(dir = "./yelp_dataset")
+
+## read --- Business
+yelp_business <- stream_in(file("business.json"),verbose = FALSE)
+b_flat <-jsonlite::flatten(yelp_business)
+   
+setwd(parentwd)
+rm(parentwd)
+```
+
+Data Cleaning
+```{r}
+## select restaurant data
+all_restaurant <- b_flat[str_detect(b_flat$categories,pattern = "Restaurants"),]
+
+## delete Toronto 
+
+## select data with reviews > 30
+review_30plus <- test1[all_restaurant$review_count>30,]
+# colnames(review_30plus)
+
+## check NA columns
+
+na.check <- function(x){
+    
+   na_count <-sapply(x, function(y) sum(length(which(is.na(y)))))
+   na_count_df <- data.frame(na_count,col.n=seq(1:length(na_count)))
+    return(View(na_count_df))
+}
+
+check <- apply(review_30plus, 2, function(x) any(is.na(x)))
+# names(check[array(check)])
+
+na_count <-sapply(review_30plus, function(y) sum(length(which(is.na(y)))))
+
+na_count_df <- data.frame(na_count,col.n=seq(1:length(na_count)))
+View(na_count_df)
+
+## delete all NA rows
+all_na_rows <- apply(review_30plus, 1, function(x) all(is.na(x)))
+review_30plus_clean <- review_30plus[!all_na_rows,]
+
+
+## delete all attributes = NA rows
+att_all_na <- apply(review_30plus_clean[,13:51], 1, function(x) all(is.na(x)))
+review_30plus_clean.2<- review_30plus_clean[!att_all_na,]
+
+## check stars distributes
+t2 <- test2 %>% dplyr::select(stars,attributes.Caters)%>%tidyr::drop_na() 
+table(t2)
+
+## select columns
+bs_select <-review_30plus_clean.2[,c(1:12,16,17,18,20,21,22,24,25,26,27)]
+bs_clean <- bs_select
+
+
+## all attributes 
+
+# bs_select <- na.omit(review_30plus[,c(1:12,16,17,18,20,21,22,24,25,26,27)])
+na.check(bs_clean)
+
+table(bs_clean$attributes.Caters)
+
+View(head(bs_select,50))
+
+table(bs_select$state)
+table(bs_select$is_open)
+
+## only one restaurant in TX, exclude TX
+bs_clean <-bs_select[-which(bs_select$state=="TX"),]
+View(head(bs_clean,50))
+# dplyr::mutate(bs_clean,)
+
+```
+
+```{r}
+# categories check
+
+c_check <- function(x){
+    
+   y <- str_detect(bs_select$categories,pattern = x)
+   sum(y)
+}
+
+
+restaurant_type <- c("Italian","American","French","Japanese","Chinese","Thai","Korean","Vietnamese","Nightlife","Mexican","Spain","Asian Fusion")
+
+sapply(restaurant_type, c_check)
+
+
+
+
+ 
+
+```
+
+
+Add Column of avaliables ways of parkings --Business Parking
+```{r}
+
+# str_count(bs_select$attributes.BusinessParking,pattern = "True")
+bs_new <- bs_clean %>% mutate(n_parks=str_count(bs_clean$attributes.BusinessParking,pattern = "True"))
+View(select(bs_new,n_parks,attributes.BusinessParking))
+
+## replace n_parks NA with 0
+bs_new$n_parks[is.na(bs_new$n_parks)] <- 0
+
+```
+
+Modify Data
+```{r}
+
+# Caters
+
+bs_new <- mutate(bs_new,Caters = if_else(attributes.Caters=="True",1,0,missing = 0))
+sum(is.na(bs_new$Caters))
+View(bs_new)
+
+# Take out
+bs_new <- mutate(bs_new,TakeOut = if_else(attributes.RestaurantsTakeOut =="True",1,0,missing = 0))
+sum(is.na(bs_new$TakeOut))
+
+# Price Range
+# delete NA and None rows
+
+View(bs_new[which(bs_new$attributes.RestaurantsPriceRange2=="None"),])
+
+table(bs_new$attributes.RestaurantsPriceRange2)
+
+View(bs_new[is.na(bs_new$attributes.RestaurantsPriceRange2),])
+
+bs_new <- bs_new[-which(bs_new$attributes.RestaurantsPriceRange2=="None"),]
+bs_new <- bs_new[!is.na(bs_new$attributes.RestaurantsPriceRange2),]
+bs_new$PriceRange <- bs_new$attributes.RestaurantsPriceRange2
+
+# OutdoorSeating
+bs_new <- mutate(bs_new,OutdoorSeating = if_else(attributes.OutdoorSeating =="True",1,0,missing = 0))
+
+# HasTV
+bs_new <- mutate(bs_new,HasTV = if_else(attributes.HasTV =="True",1,0,missing = 0))
+
+# NoiseLevel
+bs_new$NoiseLevel <- str_remove_all(bs_new$attributes.NoiseLevel, "u'")
+bs_new$NoiseLevel <- str_remove_all(bs_new$NoiseLevel, "'")
+bs_new <- bs_new[-which(bs_new$NoiseLevel=="None"),]
+bs_new <- bs_new[!is.na(bs_new$NoiseLevel),]
+
+# WiFi
+bs_new$WiFi <- str_remove_all(bs_new$attributes.WiFi, "u'")
+bs_new$WiFi <- str_remove_all(bs_new$WiFi, "'")
+## replace wifi na with no
+bs_new$WiFi[is.na(bs_new$WiFi)] <- "no"
+## replace wifi none with no
+bs_new$WiFi[bs_new$WiFi=="None"] <- "no"
+## combine paid wifi with free wifi to yes
+bs_new$WiFi[or(bs_new$WiFi=="free",bs_new$WiFi=="paid")] <- "yes"
+
+# Alcohol
+bs_new$Alcohol <- str_remove_all(bs_new$attributes.Alcohol, "u'")
+bs_new$Alcohol <- str_remove_all(bs_new$Alcohol, "'")
+bs_new <- bs_new[!is.na(bs_new$Alcohol),]
+bs_new$Alcohol[bs_new$Alcohol=="None"] <- "none"
+
+# Ambience
+bs_new <- bs_new[!is.na(bs_new$attributes.Ambience),]
+bs_new <- bs_new[-which(bs_new$attributes.Ambience=="None"),]
+
+my_replace <- function(var1){
+    res <- str_replace_all(var1,pattern = "'",replacement = '"')
+    res <- str_replace_all(res,pattern = "False",replacement = "0")
+    res <- str_replace_all(res,pattern = "True",replacement = "1")
+    return(res)
+}
+
+replace_all <- function(df){
+    return(sapply(df,FUN = my_replace))
+    ## test_apply <- replace_all(test)
+}
+
+
+reconstruct_df <- function(l){
+    null_row <- data.frame(t(c(0,0,0)))
+    colnames(null_row) <- c("romantic","intimate","classy")
+    for(i in 1:length(l)){
+        name <-  dimnames(sapply(l[i],FUN=fromJSON))[[1]]
+        #print(dt_temp)
+        #print(colnames(dt_temp))
+        #print(length(colnames(dt_temp)))
+     #   print(i)
+        if(i<2){
+            val <-  unlist(sapply(l[i],FUN=fromJSON))
+            dt_temp <- as.data.frame(t(as.matrix(val)))
+            colnames(dt_temp) <- name
+            dt <- dt_temp
+        } else if(!is.null(name) ){
+            val <-  unlist(sapply(l[i],FUN=fromJSON))
+            dt_temp <- as.data.frame(t(as.matrix(val)))
+            colnames(dt_temp) <- name
+            dt <- dplyr::bind_rows(list(dt,dt_temp))
+        }else {
+            dt<- dplyr::bind_rows(list(dt,null_row))
+        }
+    }
+    return(dt)
+}
+
+bs_new_colname <- data.frame(colnames(bs_new))
+View(bs_new_colname)
+bs_new_2 <- bs_new[,c(1:12,19,23:31)]
+View(bs_new_2)
+
+
+Ambience <- as.data.frame(bs_new_2$attributes.Ambience)
+bs_new_3 <- replace_all(Ambience)
+bs_new_4 <- reconstruct_df(bs_new_3)
+
+# replace na function
+replace_na <- function(x){
+    x[is.na(x)] <- 0
+    return(x)
+}
+
+# replace ambience na 
+bs_new_4_c <- as.data.frame(sapply(bs_new_4, replace_na))
+# check how many labels of each ambience
+apply(bs_new_4_c,2,sum)
+
+bs_new_5 <- cbind(bs_new_2,bs_new_4_c)
+
+bs_new5_colname <- data.frame(colnames(bs_new_5))
+
+c <- colnames(bs_new_5[,c(23:31)])
+
+for (i in 1:length(c)){
+    c[i] <- paste("Ambience.",c[i],sep = "")
+}
+colnames(bs_new_5)[23:31] <- c
+
+head_bs_new_5 <- head(bs_new_5,20)
+
+
+
+
+```
+
+Model
+```{r}
+bs_model <- bs_new_5
+table(bs_model$state)
+bs_model <- bs_model[-which(bs_model$state=="TX"),]
+
+fit <- lmer (data= bs_model, stars ~ n_parks+ Caters+ TakeOut+ factor(PriceRange)+ OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(WiFi) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|state))
+
+fit1 <-  lmer (data= bs_model, stars ~ review_count+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                   HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|state))
+
+fit2 <- lmer (data= bs_model, stars ~ n_parks+ Caters+ TakeOut+ factor(PriceRange)+ OutdoorSeating+
+                 factor(NoiseLevel) + factor(WiFi) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|state))
+
+fit3 <-  lmer (data= bs_model, stars ~ review_count+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|state:city))
+
+fit4 <-  lmer (data= bs_model, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city:state))
+
+fit5 <-  lmer (data= bs_model, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city) + (1|state))
+
+fit6 <- lmer (data= bs_model, stars ~ review_count+ is_open+n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                  OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(WiFi) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city))
+
+
+fit7 <-  lmer (data= bs_model2, stars ~ NoiseLevel + review_count + trendy + Caters + 
+    state + hipster + intimate + Alcohol + Mediterranean + n_parks + 
+    classy + casual + PriceRange + divey + American + touristy + 
+    is_open + Nightlife + romantic + Italian + TakeOut + Breakfast_Brunch +(1|city) + (1|state))
+  
+  
+  
+  
+  
+
+AIC(fit,fit1,fit2,fit3,fit4,fit5,fit6,fit7)
+
+aic_table <- bs_model%>%dplyr::select(stars,review_count, is_open,n_parks, Caters, TakeOut, PriceRange,OutdoorSeating,
+                 HasTV ,NoiseLevel , WiFi , Alcohol , romantic , intimate,
+                 classy , hipster , divey , touristy , trendy , upscale , casual , city)
+aic_table%<>%as.data.frame()%>%dplyr::select(-state)
+
+str(aic_table)
+aic_table$PriceRange%<>%as.numeric()
+aic_table%<>%dplyr::mutate_if(.predicate = is.character,.funs = factor)
+
+fit_base <- lm(data = aic_table,stars~.)
+
+aic_model <- step(lm(data = aic_table,formula = stars~1),direction = "forward",scope = formula(fit_base),k = 2,trace = 0)
+aic_model$call
+bic_model <- step(lm(data = aic_table,formula = stars~1),direction = "forward",scope = formula(fit_base),k = log(nrow(aic_table)),trace = 0)
+bic_model$call
+
+
+
+######### new aic table
+aic_table2 <- bs_model2[,c(4,5,9,10:11,14:31,33:39)]
+
+View(colnames(bs_model2))
+colnames(aic_table2)
+
+fit_base <- lm(data = aic_table2,stars~.)
+bic_model <- step(lm(data = aic_table2,formula = stars~1),direction = "forward",scope = formula(fit_base),k = log(nrow(aic_table2)),trace = 0)
+
+
+bic_model$call 
+
+plot(aic_model,which =1)
+plot(bic_model,which =1)
+try_model <- lm(data = aic_table,formula = log(stars)~NoiseLevel+review_count+trendy+Caters+hipster+intimate+Alcohol+n_parks+classy+casual+TakeOut+divey+is_open+touristy+PriceRange+romantic+OutdoorSeating)
+
+plot(try_model,which = 1)
+corr_tab <- bs_model%>%as.data.frame()%>%dplyr::select(n_parks:casual)
+corr_tab$PriceRange%<>%as.numeric()
+corr_tab%<>%dplyr::mutate_if(.predicate = is.character,.funs = factor)
+corr_tab%<>%dplyr::mutate_if(.predicate = is.factor,.funs = as.numeric)
+corr_tab_res <- cor(corr_tab,method = "pearson")
+
+corrplot(corr_tab_res,abs = FALSE)
+str(corr_tab)
+arm::display(fit)
+
+summary(fit)
+
+arm::display(fit2)
+
+sim <- simulate(fit4,use.u=T,newdata=bs_model)
+
+fit_df <- cbind(bs_model[,c("state","stars","state_n")],sim=sim$sim_1)
+fit_df$resi <- fit_df$stars-fit_df$sim
+fit_df$state %<>%factor()
+str(fit_df)
+fit_df%<>%dplyr::mutate(pred = round(sim/0.5)*0.5,resid_pred = stars - pred)
+
+ggplot(fit_df )+geom_point()+aes(x=pred,y=resid_pred)+geom_hline(yintercept=0,lty="dashed")
+
+state_n <- fit_df%>%dplyr::select(state,state_n)%>%dplyr::distinct()%>%as.data.frame()%>%
+    arrange(state)
+
+str(state_n$state)
+
+ggplot(fit_df) + geom_histogram(aes(x= stars),fill="#d64b3c",alpha = .3) + geom_histogram(aes(x= pred),fill="#12994a",alpha = .3)
+
+
+### Hello fix-effect
+
+a <- fixef(fit)
+conf <- confint(fit)
+b <- conf[-1:-3,]
+dt <- data.frame(Value= a,
+                 low=b[,1],
+                 up=b[,2],
+                 index=rownames(b))
+dtn <- dt[-1,]
+ggplot(dtn,aes(y=index,x=Value,xmin=low,xmax=up)) +
+    geom_point() + geom_errorbarh()
+
+
+rr1 <- ranef(fit)
+dd <- as.data.frame(rr1)
+
+ggplot(dd,aes(y=))
+
+AIC(fit,fit1,fit2,fit3,fit4,fit5,fit_n)
+
+
+posterior_predict
+
+ppc_dens_overlay
+
+bs_model %<>% group_by(state) %>% mutate(state_n=n()) %>% ungroup()
+
+## 
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~state)
+
+## Alcohol
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~Alcohol)
+
+## HaxTV
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~HasTV)
+
+## PriceRange
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (PriceRange))
+
+## Ourdoor Seating
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (OutdoorSeating))
+
+## Take Out
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (TakeOut))
+
+## Caters
+ggplot(bs_model,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (Caters))
+
+# binnedplot(fi)
+```
+
+What if use categories for the grouping
+```{r}
+# seperate categories data
+bs_model2 <- bs_model # back up bs_model df
+
+
+bs_model2%<>%dplyr::mutate_if(.predicate = is.character,.funs = factor)
+summary(bs_model2)
+
+
+
+
+
+c_check <- function(x){
+    
+   y <- str_detect(bs_model2$categories,pattern = x)
+   sum(y)
+}
+
+
+restaurant_type <- c("Italian","American","French","Japanese","Chinese","Thai","Korean","Vietnamese","Mexican","Greek","Mediterranean","Indian","Latin","Sushi","Cafes","Middle Eastern","Spain","Asian Fusion","Nightlife","Cuban","Desserts","Cantonese","Caribbean","Bars","Nightlife","Breakfast & Brunch")
+
+sapply(restaurant_type, c_check)
+
+sum((str_detect(cat,"American")) & (str_detect(cat,"Mexican")))
+
+
+
+
+fit6_asian_food <-  lmer (data= bs_model, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city) + (1|state))
+
+
+cat <- bs_model2$categories
+
+ 
+#  text <- c("Because I could not stop for Death -",
+#           "He kindly stopped for me -",
+#           "The Carriage held but just Ourselves -",
+#           "and Immortality")
+# 
+# text_df2 <- tibble(line = 1:4, text = text)
+# 
+# text_df2
+# text_df2 %>%
+#   unnest_tokens(word, text)
+ 
+ 
+ 
+# sum((str_detect(cat,"Japanese")) | (str_detect(cat,"Korean"))|(str_detect(cat,"Korean"))|(str_detect(cat,"Korean"))) 
+
+ggplot(bs_model2) + geom_bar(aes(x=stars,color=state,fill=state))  
+
+strings_asian <- c("Japanese", "Chinese", "Korean", "Sushi", "Asian Fusion", "Vietnamese","Thai")
+queries_asian <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_asian, collapse = "|")))
+
+ggplot(queries_asian) + geom_bar(aes(x=stars,color=state,fill=state))   ## asian
+
+
+
+strings_nightlife <- c("Nightlife")
+queries_nightlife <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_nightlife, collapse = "|")))
+
+ggplot(queries_nightlife) + geom_bar(aes(x=stars,color=state,fill=state))   ## Nightlife
+
+
+
+strings_american <- c("American")
+queries_american <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_american, collapse = "|")))
+
+ggplot(queries_american) + geom_bar(aes(x=stars,color=state,fill=state))   ## American
+
+
+
+
+strings_Mediterranean <- c("Mediterranean","Greek")
+queries_Mediterranean <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_Mediterranean,collapse = "|")))
+ggplot(queries_Mediterranean) + geom_bar(aes(x=stars,color=state,fill=state))
+
+# Breakfast & Brunch
+
+strings_bb <- c("Breakfast & Brunch")
+queries_bb <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_bb, collapse = "|")))
+
+ggplot(queries_bb) + geom_bar(aes(x=stars,color=state,fill=state))
+
+
+ggplot(queries_asian) + geom_bar(aes(x=stars,color=state,fill=state))   ## asian
+
+ggplot(queries_american) + geom_bar(aes(x=stars,color=state,fill=state)) ## american
+
+
+
+
+fit_asian_food <-  lmer (data= queries_asian, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city) + (1|state)+(1|postal_code))
+
+fit_night_life <-  lmer (data= queries_nightlife, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city) + (1|state))
+
+fit_queries_bb <-  lmer (data= queries_bb, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual + (1|city) + (1|state))
+
+
+fit_n <-  lmer (data= bs_model2, stars ~ review_count+ is_open+ n_parks+ Caters+ TakeOut+ factor(PriceRange)+
+                   OutdoorSeating+
+                 HasTV +factor(NoiseLevel) + factor(Alcohol) + romantic + intimate+
+                 classy + hipster + divey + touristy + trendy + upscale + casual +Asian+ American+ Nightlife+Breakfast_Brunch+
+                   Mediterranean + Italian +Mexican +(1|city) + (1|state))
+
+
+summary(fit_asian_food)
+
+summary(fit_queries_bb)
+
+summary(fit_n)
+
+
+
+sum(bs_model$state=="ON")
+
+table(queries_nightlife$state)
+
+
+
+
+
+bs_model2 <- bs_model2 %>% mutate(Asian= if_else(str_detect(categories,paste(strings_asian, collapse = "|"))==TRUE,1,0),
+                                  American = if_else(str_detect(categories,paste(strings_american, collapse = "|"))==TRUE,1,0),
+                                  Italian = if_else(str_detect(categories,"Italian")==TRUE,1,0),
+                                  Mexican = if_else(str_detect(categories,"Mexican")==TRUE,1,0),
+                                  Mediterranean = if_else(str_detect(categories,paste(strings_Mediterranean, collapse = "|"))==TRUE,1,0),
+                                  Nightlife = if_else(str_detect(categories,paste(strings_nightlife, collapse = "|"))==TRUE,1,0),
+                                  Breakfast_Brunch = if_else(str_detect(categories,paste(strings_bb, collapse = "|"))==TRUE,1,0))
+
+View(bs_model2)
+
+
+bs_new <- mutate(bs_new,Caters = if_else(attributes.Caters=="True",1,0,missing = 0))
+
+
+```
+
+
+Model-2
+```{r}
+
+city_count <- bs_model %>% group_by(city) %>% summarise(a = n()) %>% arrange(desc(a))
+
+Phoenix <- bs_model %>% filter (city=="Phoenix")
+Phoenix$stars =  factor(Phoenix$stars,ordered = T)
+
+View(Phoenix)
+
+Phoenix$PriceRange <- as.numeric(Phoenix$PriceRange)
+Phoenix$Alcohol <- as.factor(Phoenix$Alcohol)
+
+postcode_count <- Phoenix %>% group_by(postal_code) %>% summarise(a = n()) %>% arrange(desc(a))
+
+
+Phoenix %<>% group_by(postal_code) %>% mutate(post_n=n()) %>% ungroup()
+
+Phoenix_1 <- Phoenix %>% filter(post_n>10) %>% arrange(desc(post_n))
+
+library(brms)
+
+fit_brm <- brm(data = Phoenix_1, stars ~ NoiseLevel +review_count + trendy + Caters + hipster +intimate + 
+    Alcohol +  n_parks +classy + 
+    casual + TakeOut + divey  + 
+   is_open + touristy +PriceRange + romantic + (1|postal_code),family = categorical(),
+            prior = set_prior("normal(0,2)"),cores = 2)
+
+
+lm(formula = stars ~ NoiseLevel + review_count + trendy + Caters + 
+    hipster + intimate + Alcohol + n_parks + classy + casual + 
+    TakeOut + divey + is_open + touristy + PriceRange + romantic + 
+    OutdoorSeating, data = aic_table)
+```
+
+
