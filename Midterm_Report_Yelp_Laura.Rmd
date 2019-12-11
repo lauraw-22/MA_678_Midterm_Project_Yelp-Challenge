@@ -38,7 +38,7 @@ setwd(parentwd)
 rm(parentwd)
 
 ```
-
+ 
 ## Data Preparation
 *    - Choosed all restaurant data
 *    - Choosed restaurant with reviews more than 30 reviews
