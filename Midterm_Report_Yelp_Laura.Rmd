@@ -1,0 +1,585 @@
+---
+title: "Yelp_Report"
+author: "Laura Wang"
+date: "12/7/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE)
+pacman::p_load(
+tidyverse,
+magrittr,
+knitr,
+jsonlite,
+lme4,
+arm,
+loo,
+car
+)
+```
+
+## Introduction
+From the Yelp Data Set Challenge, I choose the business data for this project. The goal of this project is to see the association between restaurant's attributes(such as the ambience of restauran,noise level,parking availability..etc), categories(such as cuisine type and also serving type) with their rating stars.
+For the multilevel modeling, I will use city and state as random effects and to compare the difference of the outcome between when using only state and use both state and city as random effects. This project will also explained the fixed effect of the model.
+```{r,echo = FALSE}
+# read data
+setwd("/Users/laura/Desktop/BU/Course/678/Midterm_Project_2019/MA_678_Midterm_Project_Yelp-Challenge")
+parentwd <- getwd()
+setwd(dir = "./yelp_dataset")
+
+## read --- Business
+yelp_business <- stream_in(file("business.json"),verbose = FALSE)
+b_flat <-jsonlite::flatten(yelp_business)
+
+setwd(parentwd)
+rm(parentwd)
+
+```
+
+## Data Preparation
+*    - Choosed all restaurant data
+*    - Choosed restaurant with reviews more than 30 reviews
+*    - Cleaned data, deleted rows with all NA values and rows that all attributes with NA values
+*    - Encode/convert categorical and logical variables
+*    - Normalize continues variableas
+```{r pressure, echo=FALSE}
+
+## select restaurant data
+all_restaurant <- b_flat[str_detect(b_flat$categories,pattern = "Restaurants"),]
+
+## delete Toronto
+
+## select data with reviews > 30
+review_30plus <- all_restaurant[all_restaurant$review_count>30,]
+# colnames(review_30plus)
+
+## check NA columns
+
+na.check <- function(x){
+
+   na_count <-sapply(x, function(y) sum(length(which(is.na(y)))))
+   na_count_df <- data.frame(na_count,col.n=seq(1:length(na_count)))
+    return(View(na_count_df))
+}
+
+check <- apply(review_30plus, 2, function(x) any(is.na(x)))
+# names(check[array(check)])
+
+na_count <-sapply(review_30plus, function(y) sum(length(which(is.na(y)))))
+
+na_count_df <- data.frame(na_count,col.n=seq(1:length(na_count)))
+
+
+## delete all NA rows
+all_na_rows <- apply(review_30plus, 1, function(x) all(is.na(x)))
+review_30plus_clean <- review_30plus[!all_na_rows,]
+
+## delete all attributes = NA rows
+att_all_na <- apply(review_30plus_clean[,13:51], 1, function(x) all(is.na(x)))
+review_30plus_clean.2<- review_30plus_clean[!att_all_na,]
+
+## select columns
+bs_select <-review_30plus_clean.2[,c(1:12,16,17,18,20,21,22,24,25,26,27)]
+bs_clean <- bs_select
+
+
+## all attributes
+
+# bs_select <- na.omit(review_30plus[,c(1:12,16,17,18,20,21,22,24,25,26,27)])
+# na.check(bs_clean)
+## only one restaurant in TX, exclude TX
+bs_clean <-bs_select[-which(bs_select$state=="TX"),]
+# View(head(bs_clean,5))
+# dplyr::mutate(bs_clean,)
+
+```
+
+### Variable Explanation
+*   `business_id` : Business(retaurant)'s unique ID
+*   `name`: Business(retaurant)'s name
+*   `city`: City of the business located
+*   `state`: State of the business located
+*   `postal_code` : Post code of the business
+*   `stars`: The rating stars of the business, rounded to half-stars
+*   `review_count`: Number of reviews
+*   `is_open`: 0 or 1 for closed or open
+*   `n_parks`: Number of ways of parking the restauran is avaliable
+*   `Caters`: 0 or 1 for without or with caters
+*   `TakeOut`: 0 or 1 for can takeout or can't takeout
+*   `PriceRange`: 1-4 for low to high price level
+*   `OutdoorSeating`: 0 or 1 for unavailable or available for ourdoor seating
+*   `HasTV`: 0 or 1 for unavailable or available for TV
+*   `NoiseLevel`: Categorized as average, loud, quiet, very_loud
+*   `WiFi`: 0 or 1 for unavailable or available for WiFi
+*   `Alcohol`: Categorized the restauran as avaliable for beer_and_wine,full_bar or none
+*   `Ambience`: Column separated to column romantic, intimate, classy, hipster, divey, touristy, trendy, upscale, casual. Each column with 0 or 1 value, 
+                indicates whether has the corresponsive attributes or not
+*   `Categories`: Column separated to column American, Nightlife, Breakfast_Brunch, Italian,Mexican, Mediterranean. Each column with 0 or 1 value, 
+                indicates whether has the corresponsive attributes or not
+*   `longitude`: Restaurant lontitude 
+*   `latitude`: Restaurant latitude
+
+```{r,echo = FALSE}
+
+# n_parks
+bs_new <- bs_clean %>% mutate(n_parks=str_count(bs_clean$attributes.BusinessParking,pattern = "True"))
+bs_new$n_parks[is.na(bs_new$n_parks)] <- 0
+
+# Caters
+
+bs_new <- mutate(bs_new,Caters = if_else(attributes.Caters=="True",1,0,missing = 0))
+
+# Take out
+bs_new <- mutate(bs_new,TakeOut = if_else(attributes.RestaurantsTakeOut =="True",1,0,missing = 0))
+# sum(is.na(bs_new$TakeOut))
+
+# Price Range
+# delete NA and None rows
+
+bs_new <- bs_new[-which(bs_new$attributes.RestaurantsPriceRange2=="None"),]
+bs_new <- bs_new[!is.na(bs_new$attributes.RestaurantsPriceRange2),]
+bs_new$PriceRange <- bs_new$attributes.RestaurantsPriceRange2
+
+# OutdoorSeating
+bs_new <- mutate(bs_new,OutdoorSeating = if_else(attributes.OutdoorSeating =="True",1,0,missing = 0))
+
+# HasTV
+bs_new <- mutate(bs_new,HasTV = if_else(attributes.HasTV =="True",1,0,missing = 0))
+
+# NoiseLevel
+bs_new$NoiseLevel <- str_remove_all(bs_new$attributes.NoiseLevel, "u'")
+bs_new$NoiseLevel <- str_remove_all(bs_new$NoiseLevel, "'")
+bs_new <- bs_new[-which(bs_new$NoiseLevel=="None"),]
+bs_new <- bs_new[!is.na(bs_new$NoiseLevel),]
+
+# WiFi
+bs_new$WiFi <- str_remove_all(bs_new$attributes.WiFi, "u'")
+bs_new$WiFi <- str_remove_all(bs_new$WiFi, "'")
+## replace wifi na with no
+bs_new$WiFi[is.na(bs_new$WiFi)] <- "no"
+## replace wifi none with no
+bs_new$WiFi[bs_new$WiFi=="None"] <- "no"
+## combine paid wifi with free wifi to yes
+bs_new$WiFi[or(bs_new$WiFi=="free",bs_new$WiFi=="paid")] <- "yes"
+
+# Alcohol
+bs_new$Alcohol <- str_remove_all(bs_new$attributes.Alcohol, "u'")
+bs_new$Alcohol <- str_remove_all(bs_new$Alcohol, "'")
+bs_new <- bs_new[!is.na(bs_new$Alcohol),]
+bs_new$Alcohol[bs_new$Alcohol=="None"] <- "none"
+
+# Ambience
+bs_new <- bs_new[!is.na(bs_new$attributes.Ambience),]
+bs_new <- bs_new[-which(bs_new$attributes.Ambience=="None"),]
+
+my_replace <- function(var1){
+    res <- str_replace_all(var1,pattern = "'",replacement = '"')
+    res <- str_replace_all(res,pattern = "False",replacement = "0")
+    res <- str_replace_all(res,pattern = "True",replacement = "1")
+    return(res)
+}
+
+replace_all <- function(df){
+    return(sapply(df,FUN = my_replace))
+    ## test_apply <- replace_all(test)
+}
+
+
+reconstruct_df <- function(l){
+    null_row <- data.frame(t(c(0,0,0)))
+    colnames(null_row) <- c("romantic","intimate","classy")
+    for(i in 1:length(l)){
+        name <-  dimnames(sapply(l[i],FUN=fromJSON))[[1]]
+        #print(dt_temp)
+        #print(colnames(dt_temp))
+        #print(length(colnames(dt_temp)))
+     #   print(i)
+        if(i<2){
+            val <-  unlist(sapply(l[i],FUN=fromJSON))
+            dt_temp <- as.data.frame(t(as.matrix(val)))
+            colnames(dt_temp) <- name
+            dt <- dt_temp
+        } else if(!is.null(name) ){
+            val <-  unlist(sapply(l[i],FUN=fromJSON))
+            dt_temp <- as.data.frame(t(as.matrix(val)))
+            colnames(dt_temp) <- name
+            dt <- dplyr::bind_rows(list(dt,dt_temp))
+        }else {
+            dt<- dplyr::bind_rows(list(dt,null_row))
+        }
+    }
+    return(dt)
+}
+
+bs_new_colname <- data.frame(colnames(bs_new))
+bs_new_2 <- bs_new[,c(1:12,19,23:31)]
+
+
+Ambience <- as.data.frame(bs_new_2$attributes.Ambience)
+bs_new_3 <- replace_all(Ambience)
+bs_new_4 <- reconstruct_df(bs_new_3)
+
+# replace na function
+replace_na <- function(x){
+    x[is.na(x)] <- 0
+    return(x)
+}
+
+# replace ambience na
+bs_new_4_c <- as.data.frame(sapply(bs_new_4, replace_na))
+# check how many labels of each ambience
+# apply(bs_new_4_c,2,sum)
+
+bs_new_5 <- as.data.frame(cbind(bs_new_2,bs_new_4_c))
+
+bs_new5_colname <- data.frame(colnames(bs_new_5))
+
+c <- colnames(bs_new_5[,c(23:31)])
+
+# for (i in 1:length(c)){
+#     c[i] <- paste("Ambience.",c[i],sep = "")
+# }
+# colnames(bs_new_5)[23:31] <- c
+
+# head_bs_new_5 <- head(bs_new_5,20)
+
+bs_model <- bs_new_5
+
+#bs_model <- bs_model[-which(bs_model$state=="TX"),]
+
+bs_model2 <- bs_model # back up bs_model df
+
+bs_model2 <- bs_model2[,-c(13)]
+
+    
+bs_model2%<>%dplyr::mutate_if(.predicate = is.character,.funs = factor)
+# summary(bs_model2)
+
+strings_asian <- c("Japanese", "Chinese", "Korean", "Sushi", "Asian Fusion", "Vietnamese","Thai")
+strings_nightlife <- c("Nightlife")
+strings_american <- c("American")
+strings_Mediterranean <- c("Mediterranean","Greek")
+strings_bb <- c("Breakfast & Brunch")
+
+bs_model2 %<>% mutate(Asian= if_else(str_detect(categories,paste(strings_asian, collapse = "|"))==TRUE,1,0),
+                                  American = if_else(str_detect(categories,paste(strings_american, collapse = "|"))==TRUE,1,0),
+                                  Italian = if_else(str_detect(categories,"Italian")==TRUE,1,0),
+                                  Mexican = if_else(str_detect(categories,"Mexican")==TRUE,1,0),
+                                  Mediterranean = if_else(str_detect(categories,paste(strings_Mediterranean, collapse = "|"))==TRUE,1,0),
+                                  Nightlife = if_else(str_detect(categories,paste(strings_nightlife, collapse = "|"))==TRUE,1,0),
+                                  Breakfast_Brunch = if_else(str_detect(categories,paste(strings_bb, collapse = "|"))==TRUE,1,0))
+
+## Data Normalize
+
+bs_model2$review_count = scale(log(bs_model2$review_count))
+
+bs_model2$longitude = scale(bs_model$longitude)
+
+bs_model2$latitude = scale(bs_model$latitude)
+
+
+#head(bs_model2,5)
+
+```
+
+## EDA
+### Restaurant observations in each states, grouped by is_open, 0 for closed, 1 for open
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+ggplot(bs_model2) + geom_bar(aes(x=state,y= (..count..)/sum(..count..),fill=state))+
+    labs(y = "Percent",x="State")+scale_y_continuous(labels = scales::percent)+ facet_wrap(~factor(is_open))
+
+```
+As we can see in this data set, 26% of data are from Arizona, 20% from Nevada and 20% from Ontario (Canada). Most of the restaurants in the dataset are open.
+
+### Rating Distributions in all state
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state),binwidth = 0.25) +labs(y = "Counts",x="Stars")
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor(state))+labs(y = "Counts",x="Stars")
+```
+As we can see from the plot, the overall stars distribution are concentrated on 3.5-4 scale.
+From each state, we can see in AZ,NV and OH, the stars are concentrated on score 4, and in ON the score is more concentrated on 3.5.
+
+### Rating Distributions in all state in different attributes 
+We try to see how different attributs of the restaurant contribute the influence to the rating scores.
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+## Alcohol
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~Alcohol) + ggtitle("Alcohol")
+
+## HasTV
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~HasTV)+ ggtitle("HasTV")
+
+## PriceRange
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (PriceRange)) + ggtitle("PriceRange")
+
+## Ourdoor Seating
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (OutdoorSeating))+
+ggtitle("Outdoor Seating")
+
+## Take Out
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (TakeOut))+
+ggtitle("Take Out")
+
+## Caters
+ggplot(bs_model2,aes(x=stars)) + geom_bar(aes(color=state,fill=state)) + facet_wrap(~factor (Caters))+
+ggtitle("Caters")
+
+```
+From above plots, we can see that the overall star distribution in each cateogries of the attributes didn't show much difference, however, we still can see the star distribution differences in different state. 
+
+### Rating stars in different types of cuisine- Asian, American, Mediterranean, Italian, Mexican
+We want to see if the rating distribution would be different in different restaurant categories.
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+
+strings_asian <- c("Japanese", "Chinese", "Korean", "Sushi", "Asian Fusion", "Vietnamese","Thai")
+strings_nightlife <- c("Nightlife")
+strings_american <- c("American")
+strings_Mediterranean <- c("Mediterranean","Greek")
+strings_bb <- c("Breakfast & Brunch")
+
+## Asian
+queries_asian <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_asian, collapse = "|")))
+## Nightlife
+queries_nightlife <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_nightlife, collapse = "|")))
+## American
+queries_american <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_american, collapse = "|")))
+## Mediterranean
+queries_Mediterranean <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_Mediterranean,collapse = "|")))
+## Breakfast & Brunch
+queries_bb <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, paste(strings_bb, collapse = "|")))
+## Italian
+queries_italian <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, "Italian"))
+## Mexican
+queries_mexican <- bs_model2 %>% 
+  filter(str_detect(bs_model2$categories, "Mexican"))
+
+ggplot(queries_asian) + geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25) +
+    ggtitle("Asian")## asian
+
+ggplot(queries_american) + geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("American")## american
+
+ggplot(queries_Mediterranean) + geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("Mediterranean")
+
+ggplot(queries_italian)+ geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("Italian")
+
+ggplot(queries_mexican)+ geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("Mexican")
+```
+As we can see Mediterranean and Italian food restaurant are more concentrated on 4 stars. Asian and American food restaurant are more concentrated on 3.5 stars. Mexican food restaurant are distributed more equally on 3.5 and 4 stares. So maybe the different cuisine may have inflence on the rating stars.
+
+### Rating stars for categories tagged as Nightlife and Breakfast & Brunch
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+
+ggplot(queries_nightlife) + geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("Nightlife")## Nightlife
+
+ggplot(queries_bb) + geom_bar(aes(x=stars,color=state,fill=state),binwidth = 0.25)+
+    ggtitle("Breakfast & Brunch")
+```
+For restaurant categorized as Nightlife and Breakfast & Brunch. We can see that for Nightlife, the difference between sore 3.5 and 4 are not that much, however, for Breakfast & Brunch, scores are more concentrated on 4.
+
+## Modeling
+We are trying to see how strong the association of each factors has with the restaurant ratings.
+### Select variables for Predictor
+First we use the stepwise regression (or stepwise selection) to find the subset of variables in the data set resulting in the best performing model, that is a model that lowers prediction error.
+```{r}
+aic_table <- bs_model2[,c(4,5,7:11,13:37)]
+fit_base <- lm(data = aic_table,stars~.)
+bic_model <- step(lm(data = aic_table,formula = stars~1),direction = "forward",scope = formula(fit_base),k = log(nrow(aic_table)),trace = 0)
+bic_model$call
+```
+From the above result, we're going to choose review_count, NoiseLevel, state, Caters,
+    Alcohol, trendy, intimate, hipster, Mediterranean, PriceRange, 
+    divey, casual, classy, American, touristy, n_parks, 
+    Nightlife, romantic, Italian, TakeOut, HasTV as predictor variables
+
+### Fit lmer model to treat State as group. Random intercept with fixed mean.
+Then we use lemr using state as group to fit the model-fit1
+```{r,echo = TRUE}
+
+fit1 <-  lmer (data= bs_model2, stars ~ review_count + NoiseLevel + Caters + 
+    Alcohol + trendy + intimate + hipster + Mediterranean + PriceRange + 
+    divey + casual + classy + American + touristy + n_parks + 
+    Nightlife + romantic + Italian + TakeOut + HasTV + (1|state))
+
+```
+
+### Fit lmer model to treat State and City as group. Intercept varying among State and City.
+Try to use both city and state as group 
+```{r,echo = TRUE}
+fit2 <-  lmer (data= bs_model2, stars ~ review_count + NoiseLevel + Caters + 
+    Alcohol + trendy + intimate + hipster + Mediterranean + PriceRange + 
+    divey + casual + classy + American + touristy + n_parks + 
+    Nightlife + romantic + Italian + TakeOut + HasTV  + (1|state)+ (1|city))
+
+```
+
+### Fit lmer model to treat State and City as group. Intercept varying among State and City within State.
+```{r,echo = TRUE}
+fit3 <-  lmer (data= bs_model2, stars ~ review_count + NoiseLevel + Caters + 
+    Alcohol + trendy + intimate + hipster + Mediterranean + PriceRange + 
+    divey + casual + classy + American + touristy + n_parks + 
+    Nightlife + romantic + Italian + TakeOut + HasTV  +  (1|state/city))
+```
+
+##  Model Validation & Interpretation
+
+### AIC check
+```{r}
+AIC(fit1,fit2,fit3)
+```
+As can see from the result, using City and State as random effect (Intercept varying among State and City) improved the model. We choose fit3 (Intercept varying among State and City within State) as our model for interpretation and validation since it has the lowest AIC.
+
+<!-- ### Model use State as Random Effect -->
+<!-- * Red plot is the observation value and the blue plot is for the prediction. -->
+<!-- ```{r,fig.align = "center",out.width = "70%",out.height="70%"} -->
+<!-- sim <- simulate(fit1,use.u=T,newdata=bs_model2) -->
+
+<!-- fit_df1 <- cbind(bs_model2[,c("city","state","stars")],pred=sim$sim_1) -->
+<!-- fit_df1$resid_pred <- fit_df1$stars-fit_df1$pred -->
+<!-- fit_df1%<>%dplyr::mutate(pred2 = round(pred/0.5)*0.5,resid_pred2 = stars - pred2) -->
+
+
+<!-- # ggplot(fit_df1)+geom_point()+aes(x=pred,y=resid_pred)+geom_hline(yintercept=0,lty="dashed") -->
+
+<!-- ggplot(fit_df1) + geom_density(aes(x= stars),fill="red",alpha = .3) + geom_density(aes(x= pred2),fill="blue",alpha = .3) + ggtitle("Set State as Random Effect") -->
+
+<!-- ggplot(fit_df1) + geom_density(aes(x= stars),fill="red",alpha = .3) + geom_density(aes(x= pred),fill="blue",alpha = .3) + facet_wrap(~state)+ -->
+<!-- ggtitle("Set State as Random Effect - By State") -->
+<!-- ``` -->
+
+### Random Effect
+```{r}
+paste0("The fixed effect intercept is"," ",round(fixef(fit3)[1],3))
+
+paste0("The random effect intercepts for each state are:")
+
+round(ranef(fit3)$state,3)
+
+
+
+```
+The intercept in each state is the state value plus the fixed effect intercept value (3.069).
+For example for Arizona, the intercept would be 3.069-0.174 = 2.895. The meaning is that, the overall average stars is 0.174 below the complete pooling(overall) mean. 
+
+
+### Fixed Effect 
+```{r}
+fe <- fixef(fit3)[-1]
+paste0("The top5 positive factors:")
+round(sort(fe,decreasing = TRUE)[1:5],3)
+
+paste0("The top5 negtive factors:")
+round(sort(fe,decreasing = FALSE)[1:5],3)
+
+
+```
+Since the variables are binary, so can tell from the above result that, intimate factor has the strongest positive association with rating score and the NoiseLevel_very_loud contributes the most negtive relationship. This means, if all other factors are the same between two restaurants, the one with ambience attribute coded as "intimate" will have 0.343 score higher on average then the restaurant without that attribute. And if all other factors are the same between two restaurants, the one with NoiseLevel labeled as "very_loud" will have 0.387 score lower on average then the restaurant without that attribute.
+
+
+### Model use State and City as Random Effect
+### Check Fitted Values Distribution
+* Red plot is the observation value and the blue plot is the predicted value
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+sim <- simulate(fit3,use.u=T,newdata=bs_model2)
+
+fit_df <- cbind(bs_model2[,c("city","state","stars")],pred=sim$sim_1)
+fit_df$resid_pred <- fit_df$stars-fit_df$pred
+fit_df%<>%dplyr::mutate(pred2 = round(pred/0.5)*0.5,resid_pred2 = stars - pred2)
+
+# ggplot(fit_df1)+geom_point()+aes(x=pred,y=resid_pred)+geom_hline(yintercept=0,lty="dashed")
+
+
+ggplot(fit_df) + geom_freqpoly(aes(x= stars),color="blue",alpha = .6,binwidth = 0.1) + 
+  geom_freqpoly(aes(x= pred2),color="red",alpha = .6,binwidth=0.1) +      
+  labs( x = "Rating Stars", y = "Counts",
+  title ="Observation VS Predicted Value Distribution",
+  subtitle = "Blue-Observation Value   Red-Predicted Value")
+
+ggplot(fit_df) + geom_freqpoly(aes(x= stars),color="blue",alpha = .6,binwidth = 0.1) + 
+  geom_freqpoly(aes(x= pred2),color="red",alpha = .6,binwidth=0.1) +   
+  facet_wrap(~state)+
+  labs( x = "Rating Stars", y = "Counts",
+  title ="Observation VS Predicted Value Distribution_By State",
+  subtitle = "Blue-Observation Value   Red-Predicted Value")
+
+
+# ggplot(fit_df) + geom_density(aes(x= stars),fill="red",alpha = .3) + geom_density(aes(x= pred2),fill="blue",alpha = .3) + ggtitle("Catogrized_prediction")
+
+# ggplot(fit_df) + geom_density(aes(x= stars),fill="red",alpha = .3) + geom_density(aes(x= pred2),fill="blue",alpha = .3) + facet_wrap(~state)+
+# ggtitle("Catogrized_prediction_In Each State")
+
+
+```
+From the plot we can see the multilevel model will pool the predicted value more toward 3.5. It will pull up the value of lower scores and will pull down the value of higher scores.
+For each state fitting, the effect can also see from each state.
+
+<!-- #### Validate Fix-effect for model fit1 -->
+<!-- ```{r} -->
+<!--  a <- fixef(fit1) -->
+<!--  conf <- confint(fit1) -->
+<!--  b <- conf[-1:-2,] -->
+<!--  dt <- data.frame(Value= a, -->
+<!--                   low=b[,1], -->
+<!--                   up=b[,2], -->
+<!--                   index=rownames(b)) -->
+<!--  dtn <- dt[-1,] -->
+<!--  ggplot(dtn,aes(y=index,x=Value,xmin=low,xmax=up)) + -->
+<!--      geom_point() + geom_errorbarh() -->
+
+
+<!-- # rr1 <- ranef(fit1) -->
+<!-- # dd <- as.data.frame(rr1) -->
+<!-- #  -->
+<!-- # ggplot(dd,aes(y=)) -->
+<!-- ``` -->
+
+### Fix-Effect Coefficient for model fit3
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+ f_3 <- fixef(fit3)
+ conf_3 <- confint(fit3)
+ c_3 <- conf_3[-1:-3,]
+ dt <- data.frame(Value= f_3,
+                  low=c_3[,1],
+                  up=c_3[,2],
+                  index=rownames(c_3))
+ dt2 <- dt[-1,]
+ ggplot(dt2,aes(y=index,x=Value,xmin=low,xmax=up)) +
+     geom_point() + geom_errorbarh()+
+   labs( x = "Coefficient Value", y = "Fixed Effect",
+  title ="Fixed-Effect Coefficient with 95% CI")
+ # geom_pointrange()
+
+```
+From the fixed effect coefficeint value plot, we can see that the Alcohol labled as none doesn't have influence on the rating score, since the confidence interval is crossing 0.
+Among all the ambience factors, except touristy, all other ambience type have positive influence on the score, and touristy has negtive influence. From this we can infer that most of the restaurant with touristy ambience will lower the scores of the restaurant.
+Another interesting finding is that, American food would have a negative influence. This might be caused by the diversity of American food restaurant which could also include fast-food.
+
+## Problems and Limitaion
+Since the outcome of the stars is ordinal, the model lmer is trying to fit the out come as continues, so we can see the residual plot is not as normal distributed. To improve the model, we need to considerr the the multinomial multilevel mnodels. This model can be implemented in brms package using brm function to choose the family equals to acat("logit"). This can be tried in future modeling. 
+```{r,fig.align = "center",out.width = "75%",out.height="75%"}
+ggplot(fit_df)+geom_point()+aes(x=pred,y=resid_pred)+geom_hline(yintercept=0,lty="dashed") +
+  ggtitle("Residual Plot")
+```
+
+## Appedix
+### Display of Fitted Model
+```{r}
+display(fit1)
+display(fit2)
+display(fit3)
+```
+
+
+
